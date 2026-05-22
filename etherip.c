@@ -157,24 +157,52 @@ static void *send_handlar(void *args){
     // end setup
     pthread_barrier_wait(&barrier);
 
+    const size_t max_burst = BURST_SIZE;
+    const uint8_t *frames[BURST_SIZE];
+    size_t sizes[BURST_SIZE];
+    uint8_t *allocs[BURST_SIZE];
+    size_t idx = 0;
+
+    if(domain == AF_INET)
+        dst_addr_len = sizeof( *(struct sockaddr_in *)dst_addr );
+    else if(domain == AF_INET6)
+        dst_addr_len = sizeof( *(struct sockaddr_in6 *)dst_addr );
+
     while(1){
 
         rlen = tap_read(tap_fd, buffer, sizeof(buffer));
         if(rlen == -1){
             // Failed to tap_read()
+            // free any pending allocations
+            for(size_t j = 0; j < idx; j++) free(allocs[j]);
             return NULL;
         }
 
-        hdr = (struct etherip_hdr *)frame;
+        size_t total_len = sizeof(struct etherip_hdr) + (size_t)rlen;
+        allocs[idx] = malloc(total_len);
+        if(!allocs[idx]){
+            fprintf(stderr, "[ERROR]: malloc failed in send_handlar\n");
+            for(size_t j = 0; j < idx; j++) free(allocs[j]);
+            return NULL;
+        }
+
+        hdr = (struct etherip_hdr *)allocs[idx];
         hdr->hdr_1st = ETHERIP_VERSION << 4;
         hdr->hdr_2nd = 0;
         memcpy(hdr+1, buffer, rlen);
-        if(domain == AF_INET)
-            dst_addr_len = sizeof( *(struct sockaddr_in *)dst_addr );
-        else if(domain == AF_INET6){
-            dst_addr_len = sizeof( *(struct sockaddr_in6 *)dst_addr );
+
+        frames[idx] = allocs[idx];
+        sizes[idx] = total_len;
+        idx++;
+
+        if(idx >= max_burst){
+            ssize_t sent = sock_send_burst(sock_fd, frames, sizes, idx, dst_addr, dst_addr_len);
+            if(sent == -1){
+                fprintf(stderr, "[ERROR]: burst send failed\n");
+            }
+            for(size_t j = 0; j < idx; j++) free(allocs[j]);
+            idx = 0;
         }
-        sock_write(sock_fd, frame, sizeof(struct etherip_hdr) + rlen, dst_addr, dst_addr_len);
 
     }
 

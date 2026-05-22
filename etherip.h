@@ -10,6 +10,8 @@
 #define BUFFER_SIZE 65535
 #define ETHERIP_VERSION 3
 
+#define BURST_SIZE 32
+
 #define THREAD_COUNT 2
 
 #endif

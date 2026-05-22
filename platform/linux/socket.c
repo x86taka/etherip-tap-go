@@ -9,8 +9,11 @@
 
 #include "socket.h"
 #include "etherip.h"
+#include <sys/uio.h>
+#include <stdlib.h>
+#include <linux/limits.h>
 
-#define SOCK_BUFFER_SIZE (256 * 1024 * 1024)
+#define SOCK_BUFFER_SIZE (1024 * 1024 * 1024)
 
 extern int sock_open(int *fd, int domain, struct sockaddr_storage *addr, socklen_t addr_len){
     *fd = socket(domain, SOCK_RAW, ETHERIP_PROTO_NUM);
@@ -80,4 +83,50 @@ extern ssize_t sock_write(int fd, const uint8_t *frame, size_t size, struct sock
         return -1;
     }
     return len;
+}
+
+extern ssize_t sock_send_burst(int fd, const uint8_t **frames, const size_t *sizes, size_t count, struct sockaddr_storage *addr, socklen_t addr_len){
+    struct mmsghdr *msgs = NULL;
+    struct iovec *iovs = NULL;
+    ssize_t ret = -1;
+    if(count == 0) return 0;
+
+    msgs = calloc(count, sizeof(struct mmsghdr));
+    if(!msgs){
+        fprintf(stderr, "[ERROR]: sock_send_burst: calloc failed\n");
+        return -1;
+    }
+
+    iovs = calloc(count, sizeof(struct iovec));
+    if(!iovs){
+        fprintf(stderr, "[ERROR]: sock_send_burst: calloc iovs failed\n");
+        free(msgs);
+        return -1;
+    }
+
+    for(size_t i = 0; i < count; i++){
+        iovs[i].iov_base = (void *)frames[i];
+        iovs[i].iov_len = sizes[i];
+
+        msgs[i].msg_hdr.msg_name = addr;
+        msgs[i].msg_hdr.msg_namelen = addr_len;
+        msgs[i].msg_hdr.msg_iov = &iovs[i];
+        msgs[i].msg_hdr.msg_iovlen = 1;
+        msgs[i].msg_hdr.msg_control = NULL;
+        msgs[i].msg_hdr.msg_controllen = 0;
+        msgs[i].msg_hdr.msg_flags = 0;
+    }
+
+    int sent = sendmmsg(fd, msgs, (unsigned int)count, 0);
+    if(sent == -1){
+        fprintf(stderr, "[ERROR]: sock_send_burst: %s\n", strerror(errno));
+        ret = -1;
+    } else {
+        ret = sent;
+    }
+
+    free(iovs);
+    free(msgs);
+
+    return ret;
 }
