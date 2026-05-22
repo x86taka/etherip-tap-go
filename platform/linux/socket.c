@@ -10,7 +10,7 @@
 #include "socket.h"
 #include "etherip.h"
 
-#define SOCK_BUFFER_SIZE (4 * 1024 * 1024)
+#define SOCK_BUFFER_SIZE (256 * 1024 * 1024)
 
 extern int sock_open(int *fd, int domain, struct sockaddr_storage *addr, socklen_t addr_len){
     *fd = socket(domain, SOCK_RAW, ETHERIP_PROTO_NUM);
