@@ -10,10 +10,24 @@
 #include "socket.h"
 #include "etherip.h"
 
+#define SOCK_BUFFER_SIZE (4 * 1024 * 1024)
+
 extern int sock_open(int *fd, int domain, struct sockaddr_storage *addr, socklen_t addr_len){
     *fd = socket(domain, SOCK_RAW, ETHERIP_PROTO_NUM);
     if(*fd == -1){
         fprintf(stderr, "[ERROR]: Failed to open socket: %s\n", strerror(errno));
+        return -1;
+    }
+
+    int sock_buf = SOCK_BUFFER_SIZE;
+    if(setsockopt(*fd, SOL_SOCKET, SO_RCVBUF, &sock_buf, sizeof(sock_buf)) == -1){
+        fprintf(stderr, "[ERROR]: Failed to set socket receive buffer: %s\n", strerror(errno));
+        close(*fd);
+        return -1;
+    }
+    if(setsockopt(*fd, SOL_SOCKET, SO_SNDBUF, &sock_buf, sizeof(sock_buf)) == -1){
+        fprintf(stderr, "[ERROR]: Failed to set socket send buffer: %s\n", strerror(errno));
+        close(*fd);
         return -1;
     }
 
