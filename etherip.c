@@ -1,12 +1,15 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <pthread.h>
 #include <signal.h>
 #include <linux/if.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 #include <arpa/inet.h>
+#include <poll.h>
 
 #include "etherip.h"
 #include "tap.h"
@@ -152,12 +155,12 @@ static void *send_handlar(void *args){
 
     ssize_t rlen; // receive len
     uint8_t buffer[BUFFER_SIZE];
-    uint8_t frame[BUFFER_SIZE];
     struct etherip_hdr *hdr;
     // end setup
     pthread_barrier_wait(&barrier);
 
     const size_t max_burst = BURST_SIZE;
+    const int burst_flush_interval_ms = 100;
     const uint8_t *frames[BURST_SIZE];
     size_t sizes[BURST_SIZE];
     uint8_t *allocs[BURST_SIZE];
@@ -169,6 +172,38 @@ static void *send_handlar(void *args){
         dst_addr_len = sizeof( *(struct sockaddr_in6 *)dst_addr );
 
     while(1){
+        struct pollfd pfd = {
+            .fd = tap_fd,
+            .events = POLLIN,
+            .revents = 0,
+        };
+        int timeout = (idx == 0) ? -1 : burst_flush_interval_ms;
+        int pret = poll(&pfd, 1, timeout);
+
+        if(pret == -1){
+            if(errno == EINTR){
+                continue;
+            }
+            fprintf(stderr, "[ERROR]: poll failed in send_handlar: %s\n", strerror(errno));
+            for(size_t j = 0; j < idx; j++) free(allocs[j]);
+            return NULL;
+        }
+
+        if(pret == 0){
+            if(idx > 0){
+                ssize_t sent = sock_send_burst(sock_fd, frames, sizes, idx, dst_addr, dst_addr_len);
+                if(sent == -1){
+                    fprintf(stderr, "[ERROR]: burst send failed\n");
+                }
+                for(size_t j = 0; j < idx; j++) free(allocs[j]);
+                idx = 0;
+            }
+            continue;
+        }
+
+        if((pfd.revents & POLLIN) == 0){
+            continue;
+        }
 
         rlen = tap_read(tap_fd, buffer, sizeof(buffer));
         if(rlen == -1){
