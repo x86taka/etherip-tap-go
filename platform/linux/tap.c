@@ -15,7 +15,8 @@
 #include "tap.h"
 #include "etherip.h"
 
-extern int tap_open(int *fd, char name[], int mtu, int domain){
+extern int tap_open(int *fd, char name[], int mtu, int domain, int mq){
+    (void)domain;
     *fd = open("/dev/net/tun", O_RDWR);
     
     if(*fd == -1){
@@ -27,6 +28,9 @@ extern int tap_open(int *fd, char name[], int mtu, int domain){
     memset(&ifr, 0, sizeof(ifr));
     strncpy(ifr.ifr_name, name, IFNAMSIZ);
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+    if(mq){
+        ifr.ifr_flags |= IFF_MULTI_QUEUE;
+    }
     if(ioctl(*fd, TUNSETIFF, &ifr) == -1){
         fprintf(stderr, "[ERROR]: Failed to TUNSETIFF: %s\n", strerror(errno));
         close(*fd);
@@ -34,11 +38,19 @@ extern int tap_open(int *fd, char name[], int mtu, int domain){
     }
 
     ifr.ifr_mtu = mtu;
-    if(ioctl(socket(AF_INET, SOCK_DGRAM, 0), SIOCSIFMTU, &ifr) == -1){
-        fprintf(stderr, "[ERROR]: Failed to SIOCSIFMTU: %s\n", strerror(errno));
+    int ctl_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if(ctl_fd == -1){
+        fprintf(stderr, "[ERROR]: Failed to open control socket: %s\n", strerror(errno));
         close(*fd);
         return -1;
     }
+    if(ioctl(ctl_fd, SIOCSIFMTU, &ifr) == -1){
+        fprintf(stderr, "[ERROR]: Failed to SIOCSIFMTU: %s\n", strerror(errno));
+        close(ctl_fd);
+        close(*fd);
+        return -1;
+    }
+    close(ctl_fd);
     
     return 0;
 }

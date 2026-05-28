@@ -51,6 +51,7 @@ static void print_usage(){
     printf("    src <ip addr>\t: set the source ip address\n");
     printf("    tap <tap if name>\t: set the tap IF name\n");
     printf("    --mtu <mtu>\t\t: set mtu (Not a tunnel IF mtu). default: 1500\n");
+    printf("    --mq\t\t: enable TAP multi-queue mode\n");
 
 }
 
@@ -257,6 +258,7 @@ int main(int argc, char **argv){
     char dst[IPv6_ADDR_STR_LEN];
     char tap_name[IFNAMSIZ];
     int mtu = 1500;
+    int mq = 0;
     int tap_fd;
     int sock_fd;
     int required_arg_cnt;
@@ -288,6 +290,9 @@ int main(int argc, char **argv){
         if(strcmp(argv[i], "--mtu") == 0){
             mtu = atoi(argv[++i]);
         }
+        if(strcmp(argv[i], "--mq") == 0){
+            mq = 1;
+        }
         if(strcmp(argv[i], "-h") == 0){
             print_usage();
             return 0;
@@ -300,7 +305,7 @@ int main(int argc, char **argv){
     }
 
     // init
-    if(tap_open(&tap_fd, tap_name, mtu, domain) == -1){
+    if(tap_open(&tap_fd, tap_name, mtu, domain, mq) == -1){
         // Failed to tap_open()
         return 0;
     }
