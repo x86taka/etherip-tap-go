@@ -159,7 +159,6 @@ static void *send_handlar(void *args){
     uint8_t buffer[BUFFER_SIZE];
     struct etherip_hdr *hdr;
     // end setup
-    pthread_barrier_wait(&barrier);
 
     const size_t max_burst = BURST_SIZE;
     const int burst_flush_interval_ms = 100;
@@ -404,6 +403,10 @@ int main(int argc, char **argv){
 
     pthread_barrier_init(&barrier, NULL, thread_count);
 
+    for(size_t i = 0; i < pair_count; i++){
+        tap_fds[i] = -1;
+    }
+
     size_t started_threads = 0;
     if(mq != 0){
         tap_fds[0] = tap_fd;
@@ -448,6 +451,8 @@ int main(int argc, char **argv){
     for(size_t i = 0; i < thread_count; i++){
         pthread_join(threads[i], NULL);
     }
+    started_threads = 0;
+    goto cleanup;
 
 cleanup_threads:
     if(started_threads > 0){
@@ -458,6 +463,8 @@ cleanup_threads:
             pthread_join(threads[i], NULL);
         }
     }
+
+cleanup:
     pthread_barrier_destroy(&barrier);
 
     // cleanup
