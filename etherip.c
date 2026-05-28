@@ -15,7 +15,8 @@
 #include "tap.h"
 #include "socket.h"
 
-static pthread_t threads[THREAD_COUNT];
+static pthread_t *threads;
+static size_t thread_count;
 static pthread_barrier_t barrier;
 
 struct etherip_hdr {
@@ -23,24 +24,22 @@ struct etherip_hdr {
     uint8_t hdr_2nd;
 };
 
-struct recv_handlar_args {
+struct handler_args {
     int domain;
     int sock_fd;
     int tap_fd;
     struct sockaddr_storage *dst_addr;
-};
-
-struct send_handlar_args {
-    int domain;
-    int sock_fd;
-    int tap_fd;
-    struct sockaddr_storage *dst_addr;
+    pthread_barrier_t *barrier;
 };
 
 static void on_signal(int s){
     (void)s;
-    pthread_kill(threads[0], SIGHUP);
-    pthread_kill(threads[1], SIGHUP);
+    if(threads == NULL){
+        return;
+    }
+    for(size_t i = 0; i < thread_count; i++){
+        pthread_kill(threads[i], SIGHUP);
+    }
 }
 
 static void print_usage(){
@@ -51,16 +50,17 @@ static void print_usage(){
     printf("    src <ip addr>\t: set the source ip address\n");
     printf("    tap <tap if name>\t: set the tap IF name\n");
     printf("    --mtu <mtu>\t\t: set mtu (Not a tunnel IF mtu). default: 1500\n");
-    printf("    --mq\t\t: enable TAP multi-queue mode\n");
+    printf("    --mq [queues]\t\t: enable TAP multi-queue mode and create queue threads\n");
 
 }
 
 static void *recv_handlar(void *args){
     // setup
-    int domain = ((struct recv_handlar_args *)args)->domain;
-    int sock_fd = ((struct recv_handlar_args *)args)->sock_fd;
-    int tap_fd = ((struct recv_handlar_args *)args)->tap_fd;
-    struct sockaddr_storage *dst_addr = ((struct recv_handlar_args *)args)->dst_addr;
+    struct handler_args *handler_args = (struct handler_args *)args;
+    int domain = handler_args->domain;
+    int sock_fd = handler_args->sock_fd;
+    int tap_fd = handler_args->tap_fd;
+    struct sockaddr_storage *dst_addr = handler_args->dst_addr;
     
     ssize_t rlen;
     uint8_t buffer[BUFFER_SIZE];
@@ -74,7 +74,7 @@ static void *recv_handlar(void *args){
     uint8_t version;
     size_t write_len;
     // end setup
-    pthread_barrier_wait(&barrier);
+    pthread_barrier_wait(handler_args->barrier);
 
     while(1){
 
@@ -148,10 +148,11 @@ static void *recv_handlar(void *args){
 
 static void *send_handlar(void *args){
     // setup
-    int domain = ((struct send_handlar_args *)args)->domain;
-    int sock_fd = ((struct send_handlar_args *)args)->sock_fd;
-    int tap_fd = ((struct send_handlar_args *)args)->tap_fd;
-    struct sockaddr_storage *dst_addr = ((struct send_handlar_args *)args)->dst_addr;
+    struct handler_args *handler_args = (struct handler_args *)args;
+    int domain = handler_args->domain;
+    int sock_fd = handler_args->sock_fd;
+    int tap_fd = handler_args->tap_fd;
+    struct sockaddr_storage *dst_addr = handler_args->dst_addr;
     size_t dst_addr_len;
 
     ssize_t rlen; // receive len
@@ -166,6 +167,8 @@ static void *send_handlar(void *args){
     size_t sizes[BURST_SIZE];
     uint8_t *allocs[BURST_SIZE];
     size_t idx = 0;
+
+    pthread_barrier_wait(handler_args->barrier);
 
     if(domain == AF_INET)
         dst_addr_len = sizeof( *(struct sockaddr_in *)dst_addr );
@@ -245,6 +248,15 @@ static void *send_handlar(void *args){
     return NULL;
 }
 
+static int parse_queue_count(const char *value){
+    char *end = NULL;
+    long count = strtol(value, &end, 10);
+    if(end == value || *end != '\0' || count <= 0){
+        return 2;
+    }
+    return (int)count;
+}
+
 int main(int argc, char **argv){
     signal(SIGINT, on_signal);
 
@@ -259,6 +271,7 @@ int main(int argc, char **argv){
     char tap_name[IFNAMSIZ];
     int mtu = 1500;
     int mq = 0;
+    int queue_count = 1;
     int tap_fd;
     int sock_fd;
     int required_arg_cnt;
@@ -292,6 +305,11 @@ int main(int argc, char **argv){
         }
         if(strcmp(argv[i], "--mq") == 0){
             mq = 1;
+            if(i + 1 < argc && argv[i + 1][0] != '-' && strspn(argv[i + 1], "0123456789") == strlen(argv[i + 1])){
+                queue_count = parse_queue_count(argv[++i]);
+            } else {
+                queue_count = 2;
+            }
         }
         if(strcmp(argv[i], "-h") == 0){
             print_usage();
@@ -302,6 +320,10 @@ int main(int argc, char **argv){
         printf("[ERROR]: Too few or too many arguments required.\n");
         printf("Help: etherip -h\n");
         return 0;
+    }
+
+    if(queue_count < 1){
+        queue_count = 1;
     }
 
     // init
@@ -354,32 +376,102 @@ int main(int argc, char **argv){
 	    dst_addr6->sin6_port = htons(ETHERIP_PROTO_NUM);
     }
 
-    // start threads
-    pthread_barrier_init(&barrier, NULL, 2);
-
-    struct recv_handlar_args recv_args = {domain, sock_fd, tap_fd, &dst_addr};
-    pthread_create(&threads[0], NULL, recv_handlar, &recv_args);
-    struct send_handlar_args send_args = {domain, sock_fd, tap_fd, &dst_addr};
-    pthread_create(&threads[1], NULL, send_handlar, &send_args);
-
-    fprintf(stdout, "[INFO]: Started etherip. dst: %s src: %s\n", dst, src);
-
-    if(pthread_join(threads[0], NULL) == 0){
-        fprintf(stderr, "[ERROR]: Stopped recv_handlar\n");
-        pthread_kill(threads[1], SIGHUP);
-        fprintf(stderr, "[ERROR]: Stopped etherip\n");
-    }
-    if(pthread_join(threads[1], NULL) == 0){
-        fprintf(stderr, "[ERROR]: Stopped send_handlar\n");
-        pthread_kill(threads[0], SIGHUP);
-        fprintf(stderr, "[ERROR]: Stopped etherip\n");
+    const size_t pair_count = (mq != 0) ? (size_t)queue_count : 1;
+    thread_count = pair_count * 2;
+    threads = calloc(thread_count, sizeof(*threads));
+    if(!threads){
+        fprintf(stderr, "[ERROR]: Failed to allocate thread array\n");
+        sock_close(sock_fd);
+        tap_close(tap_fd);
+        return 0;
     }
 
+    int *tap_fds = calloc(pair_count, sizeof(*tap_fds));
+    struct handler_args *recv_args = calloc(pair_count, sizeof(*recv_args));
+    struct handler_args *send_args = calloc(pair_count, sizeof(*send_args));
+    if(!tap_fds || !recv_args || !send_args){
+        fprintf(stderr, "[ERROR]: Failed to allocate queue state\n");
+        free(tap_fds);
+        free(recv_args);
+        free(send_args);
+        free(threads);
+        threads = NULL;
+        thread_count = 0;
+        sock_close(sock_fd);
+        tap_close(tap_fd);
+        return 0;
+    }
+
+    pthread_barrier_init(&barrier, NULL, thread_count);
+
+    size_t started_threads = 0;
+    if(mq != 0){
+        tap_fds[0] = tap_fd;
+        for(size_t queue = 1; queue < pair_count; queue++){
+            if(tap_open(&tap_fds[queue], tap_name, mtu, domain, 1) == -1){
+                fprintf(stderr, "[ERROR]: Failed to open mq tap queue %zu\n", queue);
+                goto cleanup_threads;
+            }
+        }
+    } else {
+        tap_fds[0] = tap_fd;
+    }
+
+    for(size_t queue = 0; queue < pair_count; queue++){
+        recv_args[queue].domain = domain;
+        recv_args[queue].sock_fd = sock_fd;
+        recv_args[queue].tap_fd = tap_fds[queue];
+        recv_args[queue].dst_addr = &dst_addr;
+        recv_args[queue].barrier = &barrier;
+
+        send_args[queue].domain = domain;
+        send_args[queue].sock_fd = sock_fd;
+        send_args[queue].tap_fd = tap_fds[queue];
+        send_args[queue].dst_addr = &dst_addr;
+        send_args[queue].barrier = &barrier;
+
+        if(pthread_create(&threads[queue * 2], NULL, recv_handlar, &recv_args[queue]) != 0){
+            fprintf(stderr, "[ERROR]: Failed to create recv thread for queue %zu\n", queue);
+            goto cleanup_threads;
+        }
+        started_threads++;
+
+        if(pthread_create(&threads[queue * 2 + 1], NULL, send_handlar, &send_args[queue]) != 0){
+            fprintf(stderr, "[ERROR]: Failed to create send thread for queue %zu\n", queue);
+            goto cleanup_threads;
+        }
+        started_threads++;
+    }
+
+    fprintf(stdout, "[INFO]: Started etherip. dst: %s src: %s queues: %zu\n", dst, src, pair_count);
+
+    for(size_t i = 0; i < thread_count; i++){
+        pthread_join(threads[i], NULL);
+    }
+
+cleanup_threads:
+    if(started_threads > 0){
+        for(size_t i = 0; i < started_threads; i++){
+            pthread_kill(threads[i], SIGHUP);
+        }
+        for(size_t i = 0; i < started_threads; i++){
+            pthread_join(threads[i], NULL);
+        }
+    }
     pthread_barrier_destroy(&barrier);
 
     // cleanup
     sock_close(sock_fd);
-    tap_close(tap_fd);
+    for(size_t i = 0; i < pair_count; i++){
+        if(tap_fds[i] >= 0){
+            tap_close(tap_fds[i]);
+        }
+    }
+
+    free(send_args);
+    free(recv_args);
+    free(tap_fds);
+    free(threads);
 
     return 0;
 }
