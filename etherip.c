@@ -160,7 +160,7 @@ static void *send_handlar(void *args){
     pthread_barrier_wait(&barrier);
 
     const size_t max_burst = BURST_SIZE;
-    const int burst_flush_interval_ms = 100;
+    const int burst_flush_interval_ms = 0; // Busy Loop
     const uint8_t *frames[BURST_SIZE];
     size_t sizes[BURST_SIZE];
     uint8_t *allocs[BURST_SIZE];
@@ -177,7 +177,7 @@ static void *send_handlar(void *args){
             .events = POLLIN,
             .revents = 0,
         };
-        int timeout = (idx == 0) ? -1 : burst_flush_interval_ms;
+        int timeout = burst_flush_interval_ms;
         int pret = poll(&pfd, 1, timeout);
 
         if(pret == -1){
